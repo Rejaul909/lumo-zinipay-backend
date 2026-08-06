@@ -15,6 +15,9 @@
  *   GET  /api/payments/status   -> polled by the frontend after the
  *                                  customer is redirected back
  *
+ * CORS is locked down to the LUMO frontend origin only
+ * (https://striplight.netlify.app) — see corsOptions below.
+ *
  * Setup:
  *   1. cp .env.example .env   and fill in your real values
  *   2. npm install
@@ -28,13 +31,23 @@ const path = require('path');
 const fs = require('fs');
 
 const app = express();
-app.use(cors({
-  origin: "https://striplight.netlify.app",
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"]
-}));
 
-app.options("*", cors());
+/* ------------------------------------------------------------ */
+/* CORS — only allow the LUMO frontend origin                    */
+/* ------------------------------------------------------------ */
+const ALLOWED_ORIGIN = 'https://striplight.netlify.app';
+
+const corsOptions = {
+  origin: ALLOWED_ORIGIN,
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  optionsSuccessStatus: 200 // some setups/checks expect 200 instead of the cors default 204
+};
+
+app.use(cors(corsOptions));
+// Explicitly answer preflight requests for every route with the same rules.
+app.options('*', cors(corsOptions));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -118,8 +131,15 @@ app.post('/api/payments/create', async (req, res) => {
   try {
     const {
       orderId, amount, orderTotal, remainingCOD,
-      customerName, customerPhone, customerAddress, quantity, method
+      customerName, customerPhone, customerAddress, customerEmail, quantity, method
     } = req.body || {};
+
+    // ZiniPay's live API currently enforces cus_email as required even
+    // though the public docs list it as optional. The frontend doesn't
+    // collect an email, so fall back to a default placeholder address
+    // whenever one wasn't supplied.
+    const DEFAULT_CUS_EMAIL = 'customer@example.com';
+    const cusEmail = (customerEmail && String(customerEmail).trim()) || DEFAULT_CUS_EMAIL;
 
     // ---- validation ----
     if (!orderId || typeof orderId !== 'string') {
@@ -159,6 +179,7 @@ app.post('/api/payments/create', async (req, res) => {
 
     const { ok, data } = await zinipayCreateInvoice({
       cus_name: customerName,
+      cus_email: cusEmail,
       amount: Number(amount), // delivery-fee-only advance amount
       metadata,
       redirect_url: `${APP_BASE_URL}/?order_id=${encodeURIComponent(orderId)}`,
@@ -181,6 +202,7 @@ app.post('/api/payments/create', async (req, res) => {
       customerName,
       customerPhone,
       customerAddress,
+      customerEmail: cusEmail,
       quantity,
       method,
       amount: Number(amount),          // paid now (delivery fee / advance)
@@ -273,6 +295,7 @@ app.get('/api/payments/status', async (req, res) => {
       name: order.customerName,
       phone: order.customerPhone,
       address: order.customerAddress,
+      email: order.customerEmail || null,
       quantity: order.quantity,
       method: order.method,
       payNow: order.amount,
